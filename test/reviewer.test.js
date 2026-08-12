@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { locateQuote, normalizeFinding, parseModelFindingsContent } from "../server/reviewer.js";
+import { localFindings, locateQuote, normalizeFinding, parseModelFindingsContent } from "../server/reviewer.js";
 import { REVIEW_STATUSES, TAXONOMY } from "../server/taxonomy.js";
 
 const pages = [{
@@ -77,4 +77,9 @@ test("accepts only a JSON object containing a findings array", () => {
     () => parseModelFindingsContent("关于这个问题，我还在分析。"),
     { code: "MODEL_INVALID_JSON" }
   );
+});
+
+test("does not treat table of contents leader dots as punctuation errors", () => {
+  const findings = localFindings([{ page_number: 7, text: "一、伦敦的天气 ................................ 005" }]);
+  assert.equal(findings.length, 0);
 });

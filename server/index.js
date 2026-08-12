@@ -6,7 +6,7 @@ import multer from "multer";
 import ExcelJS from "exceljs";
 import { PDFDocument, rgb } from "pdf-lib";
 import { all, appRoot, db, get, run, uploadDir } from "./db.js";
-import { extractPdf } from "./pdf.js";
+import { extractPdf, removeRepeatedMargins } from "./pdf.js";
 import { cancelReview, locateQuote, runReview } from "./reviewer.js";
 import { currentSources, syncSource } from "./sources.js";
 import { FINDING_LEVELS, REVIEW_STATUSES, SEVERITIES, TAXONOMY } from "./taxonomy.js";
@@ -63,6 +63,40 @@ function refreshFindingLocations(bookId, taskId) {
     const locations = locateQuote(page, finding.quote);
     const locationsJson = JSON.stringify(locations);
     if (locationsJson !== finding.locations_json) run("UPDATE findings SET locations_json = ? WHERE id = ?", [locationsJson, finding.id]);
+  }
+}
+
+function migrateReviewText() {
+  for (const book of all("SELECT id FROM books")) {
+    const storedPages = all("SELECT * FROM pages WHERE book_id = ? ORDER BY page_number", [book.id]);
+    const filteredPages = removeRepeatedMargins(storedPages.map((page) => ({
+      pageNumber: page.page_number,
+      text: page.text,
+      spans: JSON.parse(page.spans_json),
+      width: page.width,
+      height: page.height
+    })));
+    const changedPages = new Set();
+    for (const page of filteredPages) {
+      const stored = storedPages[page.pageNumber - 1];
+      const spansJson = JSON.stringify(page.spans);
+      if (page.text === stored.text && spansJson === stored.spans_json) continue;
+      run("UPDATE pages SET text = ?, spans_json = ? WHERE book_id = ? AND page_number = ?", [page.text, spansJson, book.id, page.pageNumber]);
+      changedPages.add(page.pageNumber);
+    }
+    if (!changedPages.size) continue;
+    const pages = new Map(all("SELECT * FROM pages WHERE book_id = ?", [book.id]).map((page) => [page.page_number, page]));
+    for (const finding of all("SELECT id, page_number, quote, subcategory FROM findings WHERE book_id = ?", [book.id])) {
+      const page = pages.get(finding.page_number);
+      const normalizedText = page.text.replace(/\s+/g, "");
+      const normalizedQuote = finding.quote.replace(/\s+/g, "");
+      const isLeaderDots = finding.subcategory === "点号差错" && /\.{8,}/.test(finding.quote);
+      if (isLeaderDots || !normalizedText.includes(normalizedQuote)) {
+        run("DELETE FROM findings WHERE id = ?", [finding.id]);
+      } else if (changedPages.has(finding.page_number)) {
+        run("UPDATE findings SET locations_json = ? WHERE id = ?", [JSON.stringify(locateQuote(page, finding.quote)), finding.id]);
+      }
+    }
   }
 }
 
@@ -160,7 +194,6 @@ app.get("/api/books/:id", (req, res) => {
   const book = bookForUser(req.params.id, req.user.id);
   if (!book) return res.status(404).json({ error: "书稿不存在" });
   const task = get("SELECT * FROM review_tasks WHERE book_id = ? ORDER BY created_at DESC LIMIT 1", [book.id]);
-  if (task) refreshFindingLocations(book.id, task.id);
   const findings = task
     ? sortFindings(all("SELECT * FROM findings WHERE task_id = ?", [task.id])).map((item) => ({ ...item, locations: JSON.parse(item.locations_json) }))
     : [];
@@ -331,6 +364,7 @@ app.use((error, _req, res, _next) => res.status(400).json({ error: error.message
 const host = process.env.NODE_ENV === "production" ? "0.0.0.0" : "127.0.0.1";
 app.listen(port, host, () => {
   console.log(`API listening on http://${host}:${port}`);
+  migrateReviewText();
   for (const task of all("SELECT id FROM review_tasks WHERE status IN ('排队中', '审读中')")) setImmediate(() => runReview(task.id));
 });
 

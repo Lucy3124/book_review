@@ -65,11 +65,30 @@ function UploadDialog({ onClose, onUploaded }) {
 
 function BooksView({ openBook }) {
   const [books, setBooks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [showUpload, setShowUpload] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [query, setQuery] = useState("");
-  async function load() { setBooks(await api("/api/books")); }
+  const [page, setPage] = useState(1);
+  async function load() {
+    setLoading(true);
+    setLoadError("");
+    let lastError;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        setBooks(await api("/api/books"));
+        setLoading(false);
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+      }
+    }
+    setLoadError(lastError.message);
+    setLoading(false);
+  }
   async function deleteBook() {
     setDeleting(true);
     await api(`/api/books/${deleteTarget.id}`, { method: "DELETE" });
@@ -78,21 +97,28 @@ function BooksView({ openBook }) {
     await load();
   }
   useEffect(() => { load(); }, []);
+  useEffect(() => { setPage(1); }, [query]);
   const filtered = books.filter((book) => book.title.toLowerCase().includes(query.toLowerCase()));
+  const pageCount = Math.max(1, Math.ceil(filtered.length / 10));
+  const currentPage = Math.min(page, pageCount);
+  const visibleBooks = filtered.slice((currentPage - 1) * 10, currentPage * 10);
   return <main className="main">
     <Header title="书稿审读" subtitle={`${books.length} 本书稿`} actions={<button className="primary" onClick={() => setShowUpload(true)}><Plus />上传书稿</button>} />
     <div className="content">
       <div className="toolbar"><div className="search"><Search /><input placeholder="搜索书稿名称" value={query} onChange={(e) => setQuery(e.target.value)} /></div><button className="icon-button outlined" onClick={load} title="刷新"><RefreshCw /></button></div>
       <div className="table-shell">
         <table><thead><tr><th>书稿</th><th>正文范围</th><th>字数</th><th>发现问题</th><th>已确认</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead>
-        <tbody>{filtered.map((book) => <tr key={book.id} onClick={() => openBook(book.id)}>
+        <tbody>{visibleBooks.map((book) => <tr key={book.id} onClick={() => openBook(book.id)}>
           <td><div className="book-cell"><div className="book-icon"><FileSearch /></div><span><strong>{book.title}</strong><small>{book.filename}</small></span></div></td>
           <td>{book.start_page && book.end_page ? `${book.start_page}–${book.end_page} / ${book.page_count}页` : `共${book.page_count}页`}</td>
           <td>{book.char_count.toLocaleString()}</td><td>{book.finding_count}</td><td>{book.confirmed_count}</td>
           <td><span className={`badge ${statusClass[book.status] || "gray"}`}>{book.status}</span></td><td>{new Date(book.updated_at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</td><td><button className="icon-button delete-button" onClick={(event) => { event.stopPropagation(); setDeleteTarget(book); }} title="删除审读记录"><Trash2 /></button></td>
         </tr>)}</tbody></table>
-        {!filtered.length && <div className="empty"><FileSearch /><strong>暂无书稿</strong><span>上传PDF后开始审读</span></div>}
+        {loading && <div className="empty"><LoaderCircle className="spin" /><strong>正在加载书稿</strong></div>}
+        {!loading && loadError && <div className="empty page-error"><AlertTriangle /><strong>书稿加载失败</strong><span>{loadError}</span><button onClick={load}>重新加载</button></div>}
+        {!loading && !loadError && !filtered.length && <div className="empty"><FileSearch /><strong>暂无书稿</strong><span>上传PDF后开始审读</span></div>}
       </div>
+      {!loading && !loadError && filtered.length > 10 && <div className="pagination"><span>共 {filtered.length} 条</span><button className="icon-button outlined" disabled={currentPage === 1} onClick={() => setPage(currentPage - 1)} title="上一页"><ChevronLeft /></button><strong>{currentPage} / {pageCount}</strong><button className="icon-button outlined" disabled={currentPage === pageCount} onClick={() => setPage(currentPage + 1)} title="下一页"><ChevronRight /></button></div>}
     </div>
     {showUpload && <UploadDialog onClose={() => setShowUpload(false)} onUploaded={() => { setShowUpload(false); load(); }} />}
     {deleteTarget && <div className="modal-backdrop"><div className="modal confirm-modal">
@@ -120,14 +146,21 @@ function SetupReview({ book, onStart }) {
 function PdfPage({ url, pageNumber, findings, selectedId, onSelect }) {
   const canvasRef = useRef(null);
   const shellRef = useRef(null);
+  const [document, setDocument] = useState(null);
   const [size, setSize] = useState({ width: 1, height: 1, scale: 1 });
   const [loading, setLoading] = useState(true);
   useEffect(() => {
+    const task = pdfjs.getDocument({ url });
+    let cancelled = false;
+    task.promise.then((loadedDocument) => { if (!cancelled) setDocument(loadedDocument); });
+    return () => { cancelled = true; setDocument(null); task.destroy(); };
+  }, [url]);
+  useEffect(() => {
+    if (!document) return;
     let cancelled = false;
     setLoading(true);
     (async () => {
-      const doc = await pdfjs.getDocument({ url }).promise;
-      const page = await doc.getPage(pageNumber);
+      const page = await document.getPage(pageNumber);
       const base = page.getViewport({ scale: 1 });
       const available = Math.max(320, (shellRef.current?.clientWidth || 700) - 56);
       const scale = Math.min(1.45, available / base.width);
@@ -143,7 +176,7 @@ function PdfPage({ url, pageNumber, findings, selectedId, onSelect }) {
       if (!cancelled) { setSize({ width: viewport.width, height: viewport.height, scale }); setLoading(false); }
     })();
     return () => { cancelled = true; };
-  }, [url, pageNumber]);
+  }, [document, pageNumber]);
   const pageMarks = findings.flatMap((finding) => finding.locations.filter((loc) => loc.page === pageNumber).map((loc, index) => ({ finding, loc, key: `${finding.id}-${index}` })));
   return <div className="pdf-stage" ref={shellRef}>{loading && <LoaderCircle className="spin pdf-loader" />}<div className="pdf-page" style={{ width: size.width, height: size.height }}><canvas ref={canvasRef} />{pageMarks.map(({ finding, loc, key }) => <button key={key} type="button" className={`pdf-underline ${selectedId === finding.id ? "selected" : ""}`} title={`${finding.category}：${finding.quote}`} aria-label={`查看错误：${finding.quote}`} onClick={() => onSelect(finding)} style={{ left: loc.x * size.scale, top: loc.y * size.scale, width: Math.max(8, loc.width * size.scale), height: Math.max(10, loc.height * size.scale) }} />)}</div></div>;
 }

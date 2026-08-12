@@ -46,7 +46,7 @@ function sentenceAt(text, matchIndex, matchLength) {
   return { start, end, sentence: text.slice(start, end).trimEnd() };
 }
 
-function localFindings(pages) {
+export function localFindings(pages) {
   const findings = [];
   for (const page of pages) {
     const rules = [
@@ -57,7 +57,7 @@ function localFindings(pages) {
         suggestion: (quote) => quote.replace(",", "，").replace(";", "；").replace(":", "：").replace("!", "！").replace("?", "？")
       },
       {
-        regex: /([，。！？；：、,.!?;:])\1+/g,
+        regex: /([，。！？；：、,!?;:])\1+/g,
         subcategory: "点号差错",
         explanation: "同一位置连续使用了重复点号。",
         suggestion: (quote) => quote[0]
@@ -117,7 +117,7 @@ async function modelFindings(pages, sources, signal) {
   const messages = [
     {
       role: "system",
-      content: `你是出版社书稿审读员。只报告能够指向原文的具体问题，目标是尽量查全，但不得编造事实、依据或来源。\n\nsubcategory只能逐字取自下面这个数组，数组之外的任何值一律禁止：\n${JSON.stringify(subcategories)}\n\n结论等级只能为：明确差错、疑似差错、高风险待专家判断。涉及法规政策、科技名词、事实或科学判断的问题，没有资料依据时不得标为明确差错。涉及国家秘密、民族宗教、国际关系、专业科技或科学判断的问题证据不足时应标为高风险待专家判断。quote字段必须是包含错误的完整原句，并逐字来自书稿；suggestion字段必须把修改动作实际应用到quote中，返回修改完成后的完整句子，不要返回“将A改为B”一类操作说明，也不要只返回被修改的词语。例如quote为“青山绿水就是金山银山。”，错误说明为“将‘青山绿水’改为‘绿水青山’”，suggestion必须返回“绿水青山就是金山银山。”。确实无法给出确定改句时填写“需编辑确认”。\n\n你必须只返回一个可被JSON.parse直接解析的JSON对象，禁止输出解释、致歉、Markdown代码块或JSON之外的任何文字。返回结构：{"findings":[{"page_number":1,"chapter":"","quote":"包含错误的完整原句","context":"原文上下文","subcategory":"必须逐字取自允许数组","finding_level":"明确差错","severity":"严重|重要|一般","explanation":"问题说明","suggestion":"修改完成后的完整句子","evidence":"判断依据","source_name":"资料名称","source_version":"资料版本","source_url":"来源链接"}]}。没有问题时返回{"findings":[]}。`
+      content: `你是出版社书稿审读员。只报告能够指向原文的具体问题，目标是尽量查全，但不得编造事实、依据或来源。目录中用于连接标题和页码的连续点号是排版引导符，不得识别为错误。\n\nsubcategory只能逐字取自下面这个数组，数组之外的任何值一律禁止：\n${JSON.stringify(subcategories)}\n\n结论等级只能为：明确差错、疑似差错、高风险待专家判断。涉及法规政策、科技名词、事实或科学判断的问题，没有资料依据时不得标为明确差错。涉及国家秘密、民族宗教、国际关系、专业科技或科学判断的问题证据不足时应标为高风险待专家判断。quote字段必须是包含错误的完整原句，并逐字来自书稿；suggestion字段必须把修改动作实际应用到quote中，返回修改完成后的完整句子，不要返回“将A改为B”一类操作说明，也不要只返回被修改的词语。例如quote为“青山绿水就是金山银山。”，错误说明为“将‘青山绿水’改为‘绿水青山’”，suggestion必须返回“绿水青山就是金山银山。”。确实无法给出确定改句时填写“需编辑确认”。\n\n你必须只返回一个可被JSON.parse直接解析的JSON对象，禁止输出解释、致歉、Markdown代码块或JSON之外的任何文字。返回结构：{"findings":[{"page_number":1,"chapter":"","quote":"包含错误的完整原句","context":"原文上下文","subcategory":"必须逐字取自允许数组","finding_level":"明确差错","severity":"严重|重要|一般","explanation":"问题说明","suggestion":"修改完成后的完整句子","evidence":"判断依据","source_name":"资料名称","source_version":"资料版本","source_url":"来源链接"}]}。没有问题时返回{"findings":[]}。`
     },
     {
       role: "user",
