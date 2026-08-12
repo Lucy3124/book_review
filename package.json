@@ -1,0 +1,35 @@
+{
+  "name": "manuscript-review-mvp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
+  },
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "node --env-file-if-exists=.env --watch server/index.js",
+    "dev:web": "vite",
+    "build": "vite build",
+    "start": "NODE_ENV=production node --env-file-if-exists=.env server/index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "cheerio": "latest",
+    "concurrently": "latest",
+    "docx": "latest",
+    "express": "latest",
+    "exceljs": "latest",
+    "lucide-react": "latest",
+    "multer": "latest",
+    "pdfjs-dist": "latest",
+    "pdf-lib": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "vite": "latest"
+  }
+}
