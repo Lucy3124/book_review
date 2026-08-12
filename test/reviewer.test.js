@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { locateQuote, normalizeFinding } from "../server/reviewer.js";
+import { locateQuote, normalizeFinding, parseModelFindingsContent } from "../server/reviewer.js";
 import { REVIEW_STATUSES, TAXONOMY } from "../server/taxonomy.js";
 
 const pages = [{
@@ -69,4 +69,12 @@ test("clips quote locations to the matching part of boundary spans", () => {
   assert.ok(locations[0].width < 120);
   assert.equal(locations[1].x, 20);
   assert.equal(locations[1].width, 140);
+});
+
+test("accepts only a JSON object containing a findings array", () => {
+  assert.deepEqual(parseModelFindingsContent('{"findings":[]}'), { findings: [] });
+  assert.throws(
+    () => parseModelFindingsContent("关于这个问题，我还在分析。"),
+    { code: "MODEL_INVALID_JSON" }
+  );
 });

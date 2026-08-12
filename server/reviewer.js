@@ -114,36 +114,54 @@ async function modelFindings(pages, sources, signal) {
   const subcategories = TAXONOMY.flatMap((group) => group.children);
   const manuscript = pages.map((page) => `[第${page.page_number}页]\n${page.text}`).join("\n\n");
   const references = sourceExcerpts(sources);
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    signal,
-    headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model,
-      temperature: 0.1,
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "system",
-          content: `你是出版社书稿审读员。只报告能够指向原文的具体问题，目标是尽量查全，但不得编造事实、依据或来源。\n\nsubcategory只能逐字取自下面这个数组，数组之外的任何值一律禁止：\n${JSON.stringify(subcategories)}\n\n结论等级只能为：明确差错、疑似差错、高风险待专家判断。涉及法规政策、科技名词、事实或科学判断的问题，没有资料依据时不得标为明确差错。涉及国家秘密、民族宗教、国际关系、专业科技或科学判断的问题证据不足时应标为高风险待专家判断。quote字段必须是包含错误的完整原句，并逐字来自书稿；suggestion字段必须把修改动作实际应用到quote中，返回修改完成后的完整句子，不要返回“将A改为B”一类操作说明，也不要只返回被修改的词语。例如quote为“青山绿水就是金山银山。”，错误说明为“将‘青山绿水’改为‘绿水青山’”，suggestion必须返回“绿水青山就是金山银山。”。确实无法给出确定改句时填写“需编辑确认”。\n\n返回JSON对象：{"findings":[{"page_number":1,"chapter":"","quote":"包含错误的完整原句","context":"原文上下文","subcategory":"必须逐字取自允许数组","finding_level":"明确差错","severity":"严重|重要|一般","explanation":"问题说明","suggestion":"修改完成后的完整句子","evidence":"判断依据","source_name":"资料名称","source_version":"资料版本","source_url":"来源链接"}]}。没有问题时返回空数组。`
-        },
-        {
-          role: "user",
-          content: `审读以下书稿片段。权威资料仅限附后的资料版本；不得引用清单外来源。\n\n书稿：\n${manuscript}\n\n权威资料：\n${JSON.stringify(references)}`
-        }
-      ]
-    })
-  });
-  if (!response.ok) {
-    const error = new Error(`模型调用失败：HTTP ${response.status}`);
-    error.status = response.status;
-    error.retryAfterMs = Number(response.headers.get("retry-after") || 0) * 1000;
+  const messages = [
+    {
+      role: "system",
+      content: `你是出版社书稿审读员。只报告能够指向原文的具体问题，目标是尽量查全，但不得编造事实、依据或来源。\n\nsubcategory只能逐字取自下面这个数组，数组之外的任何值一律禁止：\n${JSON.stringify(subcategories)}\n\n结论等级只能为：明确差错、疑似差错、高风险待专家判断。涉及法规政策、科技名词、事实或科学判断的问题，没有资料依据时不得标为明确差错。涉及国家秘密、民族宗教、国际关系、专业科技或科学判断的问题证据不足时应标为高风险待专家判断。quote字段必须是包含错误的完整原句，并逐字来自书稿；suggestion字段必须把修改动作实际应用到quote中，返回修改完成后的完整句子，不要返回“将A改为B”一类操作说明，也不要只返回被修改的词语。例如quote为“青山绿水就是金山银山。”，错误说明为“将‘青山绿水’改为‘绿水青山’”，suggestion必须返回“绿水青山就是金山银山。”。确实无法给出确定改句时填写“需编辑确认”。\n\n你必须只返回一个可被JSON.parse直接解析的JSON对象，禁止输出解释、致歉、Markdown代码块或JSON之外的任何文字。返回结构：{"findings":[{"page_number":1,"chapter":"","quote":"包含错误的完整原句","context":"原文上下文","subcategory":"必须逐字取自允许数组","finding_level":"明确差错","severity":"严重|重要|一般","explanation":"问题说明","suggestion":"修改完成后的完整句子","evidence":"判断依据","source_name":"资料名称","source_version":"资料版本","source_url":"来源链接"}]}。没有问题时返回{"findings":[]}。`
+    },
+    {
+      role: "user",
+      content: `审读以下书稿片段。权威资料仅限附后的资料版本；不得引用清单外来源。\n\n书稿：\n${manuscript}\n\n权威资料：\n${JSON.stringify(references)}`
+    }
+  ];
+  for (let formatAttempt = 1; formatAttempt <= 3; formatAttempt += 1) {
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      signal,
+      headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ model, temperature: 0.1, response_format: { type: "json_object" }, messages })
+    });
+    if (!response.ok) {
+      const error = new Error(`模型调用失败：HTTP ${response.status}`);
+      error.status = response.status;
+      error.retryAfterMs = Number(response.headers.get("retry-after") || 0) * 1000;
+      throw error;
+    }
+    const payload = await response.json();
+    const content = payload.choices?.[0]?.message?.content || "";
+    try {
+      const parsed = parseModelFindingsContent(content);
+      return [...deterministicFindings, ...parsed.findings];
+    } catch (error) {
+      if (formatAttempt === 3) throw error;
+      messages.push(
+        { role: "assistant", content },
+        { role: "user", content: "你刚才的回复不是合法JSON。请重新回答，只输出一个可被JSON.parse直接解析的JSON对象，格式必须为{\"findings\":[]}，不要输出任何其他文字。" }
+      );
+    }
+  }
+}
+
+export function parseModelFindingsContent(content) {
+  try {
+    const parsed = JSON.parse(String(content || ""));
+    if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.findings)) throw new Error();
+    return parsed;
+  } catch {
+    const error = new Error("模型未按要求返回结构化审读结果，已自动校正3次仍失败");
+    error.code = "MODEL_INVALID_JSON";
     throw error;
   }
-  const payload = await response.json();
-  const content = payload.choices?.[0]?.message?.content;
-  const parsed = JSON.parse(content || "{}");
-  return [...deterministicFindings, ...(Array.isArray(parsed.findings) ? parsed.findings : [])];
 }
 
 export function locateQuote(page, quote) {
@@ -254,6 +272,13 @@ async function reviewChunkWithRetry(taskId, chunk, sources, signal) {
     try { return await modelFindings(chunk, sources, signal); }
     catch (error) {
       lastError = error;
+      if (error.code === "MODEL_INVALID_JSON" && chunk.length > 1) {
+        run("UPDATE review_tasks SET stage = ? WHERE id = ?", [`模型格式异常，改为逐页审读第${chunk[0].page_number}-${chunk.at(-1).page_number}页`, taskId]);
+        const findings = [];
+        for (const page of chunk) findings.push(...await reviewChunkWithRetry(taskId, [page], sources, signal));
+        run("UPDATE review_tasks SET stage = '分块并行审读' WHERE id = ?", [taskId]);
+        return findings;
+      }
       if (error.status !== 429 || attempt === 3) continue;
       const delayMs = error.retryAfterMs || attempt * 30000;
       run("UPDATE review_tasks SET stage = ? WHERE id = ?", [`模型限流，${Math.ceil(delayMs / 1000)}秒后重试`, taskId]);
