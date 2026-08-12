@@ -4,6 +4,7 @@ import { FINDING_LEVELS, SEVERITIES, TAXONOMY, TAXONOMY_MAP } from "./taxonomy.j
 
 const EVIDENCE_REQUIRED = new Set(["法规与政策类差错", "科技名词差错", "知识性差错"]);
 const EXPERT_ONLY = new Set(["涉及国家秘密的差错", "涉及民族问题和宗教问题的差错", "涉及国际关系的差错", "专业性差错", "科学性差错"]);
+const TOC_SUBCATEGORIES = new Set(["错别字", "不规范字"]);
 const activeReviews = new Map();
 
 export function cancelReview(taskId) {
@@ -32,6 +33,20 @@ function getChapter(text) {
   return match?.[0] || "";
 }
 
+export function markTableOfContentsPages(pages) {
+  let inContents = false;
+  return pages.map((page) => {
+    const compact = page.text.replace(/\s+/g, " ").trim();
+    const startsContents = /(^|\s)目录(\s|$)/.test(compact);
+    const frontMatterNumber = /^(?:[ivxlcdm]+|[一二三四五六七八九十]+)\s/i.test(compact);
+    const entryCount = [...compact.matchAll(/(?:^|\s)[一二三四五六七八九十]+\s+.{2,40}?\s+\d{2,4}(?=\s|$)/g)].length;
+    if (startsContents) inContents = true;
+    const isTableOfContents = inContents && (startsContents || frontMatterNumber || entryCount >= 2);
+    if (inContents && !isTableOfContents) inContents = false;
+    return { ...page, is_table_of_contents: isTableOfContents };
+  });
+}
+
 function sentenceAt(text, matchIndex, matchLength) {
   let start = matchIndex;
   while (start > 0 && !/[。！？.!?\n]/.test(text[start - 1])) start -= 1;
@@ -49,6 +64,7 @@ function sentenceAt(text, matchIndex, matchLength) {
 export function localFindings(pages) {
   const findings = [];
   for (const page of pages) {
+    if (page.is_table_of_contents) continue;
     const rules = [
       {
         regex: /[\u4e00-\u9fff][,;:!?][\u4e00-\u9fff]/g,
@@ -112,12 +128,12 @@ async function modelFindings(pages, sources, signal) {
   const baseUrl = (process.env.LLM_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
   const model = process.env.LLM_MODEL || process.env.OPENAI_MODEL || "gpt-4.1-mini";
   const subcategories = TAXONOMY.flatMap((group) => group.children);
-  const manuscript = pages.map((page) => `[第${page.page_number}页]\n${page.text}`).join("\n\n");
+  const manuscript = pages.map((page) => `[第${page.page_number}页${page.is_table_of_contents ? "｜页面类型：目录" : ""}]\n${page.text}`).join("\n\n");
   const references = sourceExcerpts(sources);
   const messages = [
     {
       role: "system",
-      content: `你是出版社书稿审读员。只报告能够指向原文的具体问题，目标是尽量查全，但不得编造事实、依据或来源。目录中用于连接标题和页码的连续点号是排版引导符，不得识别为错误。\n\nsubcategory只能逐字取自下面这个数组，数组之外的任何值一律禁止：\n${JSON.stringify(subcategories)}\n\n结论等级只能为：明确差错、疑似差错、高风险待专家判断。涉及法规政策、科技名词、事实或科学判断的问题，没有资料依据时不得标为明确差错。涉及国家秘密、民族宗教、国际关系、专业科技或科学判断的问题证据不足时应标为高风险待专家判断。quote字段必须是包含错误的完整原句，并逐字来自书稿；suggestion字段必须把修改动作实际应用到quote中，返回修改完成后的完整句子，不要返回“将A改为B”一类操作说明，也不要只返回被修改的词语。例如quote为“青山绿水就是金山银山。”，错误说明为“将‘青山绿水’改为‘绿水青山’”，suggestion必须返回“绿水青山就是金山银山。”。确实无法给出确定改句时填写“需编辑确认”。\n\n你必须只返回一个可被JSON.parse直接解析的JSON对象，禁止输出解释、致歉、Markdown代码块或JSON之外的任何文字。返回结构：{"findings":[{"page_number":1,"chapter":"","quote":"包含错误的完整原句","context":"原文上下文","subcategory":"必须逐字取自允许数组","finding_level":"明确差错","severity":"严重|重要|一般","explanation":"问题说明","suggestion":"修改完成后的完整句子","evidence":"判断依据","source_name":"资料名称","source_version":"资料版本","source_url":"来源链接"}]}。没有问题时返回{"findings":[]}。`
+      content: `你是出版社书稿审读员。只报告能够指向原文的具体问题，目标是尽量查全，但不得编造事实、依据或来源。标记为“页面类型：目录”的页面可能包含横排、竖排、多栏或装饰性排版，PDF提取后的文字顺序不代表视觉阅读顺序。目录页只检查文字本身是否存在错别字或不规范字，只能使用“错别字”或“不规范字”两个subcategory；不得判断目录的章节顺序、编号、页码、标题缺失、文字排列、对齐、标点、语法、词语、知识或版式问题。\n\nsubcategory只能逐字取自下面这个数组，数组之外的任何值一律禁止：\n${JSON.stringify(subcategories)}\n\n结论等级只能为：明确差错、疑似差错、高风险待专家判断。涉及法规政策、科技名词、事实或科学判断的问题，没有资料依据时不得标为明确差错。涉及国家秘密、民族宗教、国际关系、专业科技或科学判断的问题证据不足时应标为高风险待专家判断。quote字段必须是包含错误的完整原句，并逐字来自书稿；suggestion字段必须把修改动作实际应用到quote中，返回修改完成后的完整句子，不要返回“将A改为B”一类操作说明，也不要只返回被修改的词语。例如quote为“青山绿水就是金山银山。”，错误说明为“将‘青山绿水’改为‘绿水青山’”，suggestion必须返回“绿水青山就是金山银山。”。确实无法给出确定改句时填写“需编辑确认”。\n\n你必须只返回一个可被JSON.parse直接解析的JSON对象，禁止输出解释、致歉、Markdown代码块或JSON之外的任何文字。返回结构：{"findings":[{"page_number":1,"chapter":"","quote":"包含错误的完整原句","context":"原文上下文","subcategory":"必须逐字取自允许数组","finding_level":"明确差错","severity":"严重|重要|一般","explanation":"问题说明","suggestion":"修改完成后的完整句子","evidence":"判断依据","source_name":"资料名称","source_version":"资料版本","source_url":"来源链接"}]}。没有问题时返回{"findings":[]}。`
     },
     {
       role: "user",
@@ -218,6 +234,7 @@ export function normalizeFinding(raw, pages) {
   const page = pages.find((item) => item.page_number === pageNumber);
   const quote = String(raw.quote || "").trim();
   if (!page || !quote || !page.text.replace(/\s+/g, "").includes(quote.replace(/\s+/g, ""))) return null;
+  if (page.is_table_of_contents && !TOC_SUBCATEGORIES.has(subcategory)) return null;
 
   let findingLevel = FINDING_LEVELS.includes(raw.finding_level) ? raw.finding_level : "疑似差错";
   const hasSource = raw.evidence && raw.source_name && raw.source_version && raw.source_url;
@@ -295,7 +312,7 @@ export async function runReview(taskId) {
   const task = get("SELECT * FROM review_tasks WHERE id = ?", [taskId]);
   if (!task) { activeReviews.delete(taskId); return; }
   const book = get("SELECT * FROM books WHERE id = ?", [task.book_id]);
-  const pages = all("SELECT * FROM pages WHERE book_id = ? AND page_number BETWEEN ? AND ? ORDER BY page_number", [book.id, book.start_page, book.end_page]);
+  const pages = markTableOfContentsPages(all("SELECT * FROM pages WHERE book_id = ? AND page_number BETWEEN ? AND ? ORDER BY page_number", [book.id, book.start_page, book.end_page]));
   const snapshotIds = JSON.parse(task.source_snapshot || "[]");
   const sources = snapshotIds.length
     ? all(`SELECT sv.*, s.name AS source_name FROM source_versions sv JOIN sources s ON s.id = sv.source_id WHERE sv.id IN (${snapshotIds.map(() => "?").join(",")})`, snapshotIds)

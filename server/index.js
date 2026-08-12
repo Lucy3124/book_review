@@ -7,7 +7,7 @@ import ExcelJS from "exceljs";
 import { PDFDocument, rgb } from "pdf-lib";
 import { all, appRoot, db, get, run, uploadDir } from "./db.js";
 import { extractPdf, removeRepeatedMargins } from "./pdf.js";
-import { cancelReview, locateQuote, runReview } from "./reviewer.js";
+import { cancelReview, locateQuote, markTableOfContentsPages, runReview } from "./reviewer.js";
 import { currentSources, syncSource } from "./sources.js";
 import { FINDING_LEVELS, REVIEW_STATUSES, SEVERITIES, TAXONOMY } from "./taxonomy.js";
 import { createConfirmedWord } from "./word.js";
@@ -97,6 +97,16 @@ function migrateReviewText() {
         run("UPDATE findings SET locations_json = ? WHERE id = ?", [JSON.stringify(locateQuote(page, finding.quote)), finding.id]);
       }
     }
+  }
+}
+
+function removeDirectoryLayoutFindings() {
+  for (const book of all("SELECT id FROM books")) {
+    const pages = markTableOfContentsPages(all("SELECT * FROM pages WHERE book_id = ? ORDER BY page_number", [book.id]));
+    const directoryPages = pages.filter((page) => page.is_table_of_contents).map((page) => page.page_number);
+    if (!directoryPages.length) continue;
+    const placeholders = directoryPages.map(() => "?").join(",");
+    run(`DELETE FROM findings WHERE book_id = ? AND page_number IN (${placeholders}) AND subcategory NOT IN ('错别字', '不规范字')`, [book.id, ...directoryPages]);
   }
 }
 
@@ -365,6 +375,7 @@ const host = process.env.NODE_ENV === "production" ? "0.0.0.0" : "127.0.0.1";
 app.listen(port, host, () => {
   console.log(`API listening on http://${host}:${port}`);
   migrateReviewText();
+  removeDirectoryLayoutFindings();
   for (const task of all("SELECT id FROM review_tasks WHERE status IN ('排队中', '审读中')")) setImmediate(() => runReview(task.id));
 });
 

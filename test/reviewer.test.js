@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { localFindings, locateQuote, normalizeFinding, parseModelFindingsContent } from "../server/reviewer.js";
+import { localFindings, locateQuote, markTableOfContentsPages, normalizeFinding, parseModelFindingsContent } from "../server/reviewer.js";
 import { REVIEW_STATUSES, TAXONOMY } from "../server/taxonomy.js";
 
 const pages = [{
@@ -80,6 +80,22 @@ test("accepts only a JSON object containing a findings array", () => {
 });
 
 test("does not treat table of contents leader dots as punctuation errors", () => {
-  const findings = localFindings([{ page_number: 7, text: "一、伦敦的天气 ................................ 005" }]);
+  const findings = localFindings([{ page_number: 7, text: "一、伦敦的天气 ................................ 005", is_table_of_contents: true }]);
   assert.equal(findings.length, 0);
+});
+
+test("marks consecutive front matter contents pages", () => {
+  const marked = markTableOfContentsPages([
+    { page_number: 3, text: "待补示意图" },
+    { page_number: 4, text: "ii 第一章 目录 一 西江黄金水道 008 二 古盐道 012" },
+    { page_number: 5, text: "iii 第二章 一 运河办纪事 043 二 岁月如河 056" },
+    { page_number: 6, text: "第一章 正文从这里开始。" }
+  ]);
+  assert.deepEqual(marked.map((page) => page.is_table_of_contents), [false, true, true, false]);
+});
+
+test("rejects non-character findings on contents pages", () => {
+  const page = { page_number: 4, text: "一 第一节 008 六", spans_json: "[]", is_table_of_contents: true };
+  assert.equal(normalizeFinding({ page_number: 4, quote: page.text, subcategory: "多字、漏字、倒字" }, [page]), null);
+  assert.equal(normalizeFinding({ page_number: 4, quote: "第一节", subcategory: "错别字" }, [page]).subcategory, "错别字");
 });
