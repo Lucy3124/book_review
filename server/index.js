@@ -6,7 +6,7 @@ import multer from "multer";
 import ExcelJS from "exceljs";
 import { PDFDocument, rgb } from "pdf-lib";
 import { all, appRoot, db, get, run, uploadDir } from "./db.js";
-import { extractPdf, removeRepeatedMargins } from "./pdf.js";
+import { extractPdf, prepareReviewPages } from "./pdf.js";
 import { cancelReview, locateQuote, markTableOfContentsPages, runReview } from "./reviewer.js";
 import { currentSources, syncSource } from "./sources.js";
 import { FINDING_LEVELS, REVIEW_STATUSES, SEVERITIES, TAXONOMY } from "./taxonomy.js";
@@ -69,7 +69,7 @@ function refreshFindingLocations(bookId, taskId) {
 function migrateReviewText() {
   for (const book of all("SELECT id FROM books")) {
     const storedPages = all("SELECT * FROM pages WHERE book_id = ? ORDER BY page_number", [book.id]);
-    const filteredPages = removeRepeatedMargins(storedPages.map((page) => ({
+    const filteredPages = prepareReviewPages(storedPages.map((page) => ({
       pageNumber: page.page_number,
       text: page.text,
       spans: JSON.parse(page.spans_json),
@@ -86,12 +86,13 @@ function migrateReviewText() {
     }
     if (!changedPages.size) continue;
     const pages = new Map(all("SELECT * FROM pages WHERE book_id = ?", [book.id]).map((page) => [page.page_number, page]));
-    for (const finding of all("SELECT id, page_number, quote, subcategory FROM findings WHERE book_id = ?", [book.id])) {
+    for (const finding of all("SELECT id, page_number, quote, subcategory, suggestion FROM findings WHERE book_id = ?", [book.id])) {
       const page = pages.get(finding.page_number);
       const normalizedText = page.text.replace(/\s+/g, "");
       const normalizedQuote = finding.quote.replace(/\s+/g, "");
       const isLeaderDots = finding.subcategory === "点号差错" && /\.{8,}/.test(finding.quote);
-      if (isLeaderDots || !normalizedText.includes(normalizedQuote)) {
+      const isWhitespaceOnly = finding.subcategory === "多字、漏字、倒字" && finding.suggestion.replace(/\s+/g, "") === normalizedQuote;
+      if (isLeaderDots || isWhitespaceOnly || !normalizedText.includes(normalizedQuote)) {
         run("DELETE FROM findings WHERE id = ?", [finding.id]);
       } else if (changedPages.has(finding.page_number)) {
         run("UPDATE findings SET locations_json = ? WHERE id = ?", [JSON.stringify(locateQuote(page, finding.quote)), finding.id]);

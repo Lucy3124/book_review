@@ -4,6 +4,28 @@ function lineKey(text) {
   return text.replace(/\s+/g, "").replace(/[\d一二三四五六七八九十百千]+/g, "");
 }
 
+export function reviewTextFromSpans(spans) {
+  let text = "";
+  let previous = null;
+  for (const span of spans) {
+    if (previous && Math.abs(previous.y - span.y) > 3) text += "\n";
+    text += span.text;
+    previous = span;
+  }
+  return text;
+}
+
+export function removeOutsideBodyColumn(pages) {
+  return pages.map((page) => {
+    const bodyLines = page.spans.filter((span) => span.height >= 9 && span.width >= page.width * 0.25);
+    if (bodyLines.length < 3) return page;
+    const bodyLeft = Math.min(...bodyLines.map((span) => span.x));
+    const bodyRight = Math.max(...bodyLines.map((span) => span.x + span.width));
+    const spans = page.spans.filter((span) => span.x + span.width >= bodyLeft - 8 && span.x <= bodyRight + 8);
+    return { ...page, spans, text: reviewTextFromSpans(spans) };
+  });
+}
+
 export function removeRepeatedMargins(pages) {
   const occurrences = new Map();
   const pageLines = pages.map((page) => {
@@ -28,8 +50,12 @@ export function removeRepeatedMargins(pages) {
   return pages.map((page, index) => {
     const excluded = new Set(pageLines[index].filter((line) => repeated.has(line.key)).flatMap((line) => line.spans));
     const spans = page.spans.filter((span) => !excluded.has(span));
-    return { ...page, spans, text: spans.map((span) => span.text).join(" ") };
+    return { ...page, spans, text: reviewTextFromSpans(spans) };
   });
+}
+
+export function prepareReviewPages(pages) {
+  return removeRepeatedMargins(removeOutsideBodyColumn(pages));
 }
 
 export async function extractPdf(buffer) {
@@ -50,11 +76,11 @@ export async function extractPdf(buffer) {
       }));
     pages.push({
       pageNumber,
-      text: spans.map((span) => span.text).join(" "),
+      text: reviewTextFromSpans(spans),
       spans,
       width: viewport.width,
       height: viewport.height
     });
   }
-  return removeRepeatedMargins(pages);
+  return prepareReviewPages(pages);
 }

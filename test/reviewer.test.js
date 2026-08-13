@@ -84,6 +84,45 @@ test("does not treat table of contents leader dots as punctuation errors", () =>
   assert.equal(findings.length, 0);
 });
 
+test("does not treat valid reduplication or adjacent le particles as extra characters", () => {
+  const findings = localFindings([{
+    page_number: 1,
+    text: "这不是空洞的宏大叙事，而是实实在在的聚沙成塔。他已经干不了了。"
+  }]);
+  assert.equal(findings.filter((finding) => finding.subcategory === "多字、漏字、倒字").length, 0);
+});
+
+test("always routes possible state secret issues to expert review", () => {
+  const page = { page_number: 1, text: "该内部设施数据需要核查。", spans_json: "[]" };
+  const finding = normalizeFinding({
+    page_number: 1,
+    quote: page.text,
+    subcategory: "涉及国家秘密的差错",
+    finding_level: "明确差错",
+    evidence: "公开属性需要核查",
+    source_name: "某资料",
+    source_version: "2026",
+    source_url: "https://example.com"
+  }, [page], [{ source_name: "某资料", version: "2026", url: "https://example.com" }]);
+  assert.equal(finding.finding_level, "高风险待专家判断");
+});
+
+test("does not accept a model-invented policy source as evidence", () => {
+  const page = { page_number: 1, text: "某政策固定表述。", spans_json: "[]" };
+  const finding = normalizeFinding({
+    page_number: 1,
+    quote: page.text,
+    subcategory: "涉及法律法规或文件摘录、引用的差错",
+    finding_level: "明确差错",
+    evidence: "与文件原文不一致",
+    source_name: "虚构文件",
+    source_version: "2026",
+    source_url: "https://example.com/invented"
+  }, [page], [{ source_name: "真实文件", version: "2026", url: "https://example.com/real" }]);
+  assert.equal(finding.finding_level, "疑似差错");
+  assert.equal(finding.source_url, "");
+});
+
 test("marks consecutive front matter contents pages", () => {
   const marked = markTableOfContentsPages([
     { page_number: 3, text: "待补示意图" },
