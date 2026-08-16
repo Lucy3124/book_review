@@ -7,7 +7,7 @@ import ExcelJS from "exceljs";
 import { PDFDocument, rgb } from "pdf-lib";
 import { all, appRoot, db, get, run, uploadDir } from "./db.js";
 import { extractPdf, prepareReviewPages } from "./pdf.js";
-import { cancelReview, locateQuote, markTableOfContentsPages, runReview } from "./reviewer.js";
+import { cancelReview, locateQuote, markTableOfContentsPages, recheckExistingMechanicalFindings, runReview } from "./reviewer.js";
 import { currentSources, syncSource } from "./sources.js";
 import { FINDING_LEVELS, REVIEW_STATUSES, SEVERITIES, TAXONOMY } from "./taxonomy.js";
 import { createConfirmedWord } from "./word.js";
@@ -377,6 +377,16 @@ app.listen(port, host, () => {
   console.log(`API listening on http://${host}:${port}`);
   migrateReviewText();
   removeDirectoryLayoutFindings();
+  setImmediate(async () => {
+    const migrationName = "recheck-mechanical-findings-v1";
+    if (get("SELECT name FROM maintenance_runs WHERE name = ?", [migrationName])) return;
+    try {
+      const completed = await recheckExistingMechanicalFindings();
+      if (completed) run("INSERT INTO maintenance_runs (name, completed_at) VALUES (?, ?)", [migrationName, now()]);
+    } catch (error) {
+      console.error(`存量问题复核失败：${error.message}`);
+    }
+  });
   for (const task of all("SELECT id FROM review_tasks WHERE status IN ('排队中', '审读中')")) setImmediate(() => runReview(task.id));
 });
 

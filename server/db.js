@@ -117,6 +117,10 @@ db.exec(`
     is_current INTEGER NOT NULL DEFAULT 1,
     FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE
   );
+  CREATE TABLE IF NOT EXISTS maintenance_runs (
+    name TEXT PRIMARY KEY,
+    completed_at TEXT NOT NULL
+  );
 `);
 
 const bookColumns = db.prepare("PRAGMA table_info(books)").all();

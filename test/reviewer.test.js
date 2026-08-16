@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { localFindings, locateQuote, markTableOfContentsPages, normalizeFinding, parseModelFindingsContent } from "../server/reviewer.js";
+import { localFindings, locateQuote, manuscriptTextForModel, markTableOfContentsPages, normalizeFinding, parseModelFindingsContent } from "../server/reviewer.js";
 import { REVIEW_STATUSES, TAXONOMY } from "../server/taxonomy.js";
 
 const pages = [{
@@ -90,6 +90,11 @@ test("does not treat valid reduplication or adjacent le particles as extra chara
     text: "这不是空洞的宏大叙事，而是实实在在的聚沙成塔。他已经干不了了。"
   }]);
   assert.equal(findings.filter((finding) => finding.subcategory === "多字、漏字、倒字").length, 0);
+});
+
+test("removes PDF line and column breaks from model input", () => {
+  const text = manuscriptTextForModel([{ page_number: 103, text: "她马上跟女\n红军聊开了。" }]);
+  assert.equal(text, "[第103页]\n她马上跟女红军聊开了。");
 });
 
 test("always routes possible state secret issues to expert review", () => {

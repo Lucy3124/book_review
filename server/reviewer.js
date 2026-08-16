@@ -178,6 +178,94 @@ function sourceExcerpts(sources, manuscript) {
   }).sort((left, right) => right.relevance - left.relevance).slice(0, 6).map(({ relevance, ...source }) => source);
 }
 
+export function manuscriptTextForModel(pages) {
+  return pages.map((page) => `[第${page.page_number}页${page.is_table_of_contents ? "｜页面类型：目录" : ""}]\n${page.text.replace(/\n/g, "")}`).join("\n\n");
+}
+
+const MECHANICAL_REVIEW_EXAMPLES = `判定参考：
+- “斑纹可以使动物将自身融入环境的颜色中而隐藏起来来。”→“斑纹可以使动物将自身融入环境的颜色中而隐藏起来。”：后一个“来”是机械重复，可以唯一删除。
+- “我我立即上前，拉住两人。”→“我立即上前，拉住两人。”：句首主语机械重复。
+- “还有一个想法在他心里越来清晰。”→“还有一个想法在他心里越来越清晰。”：固定结构“越来越”缺字。
+- “实实在在的聚沙成塔”是正常叠词表达，不得删除任何一个“在”。
+- “他已经干不了了”中的两个“了”分属“不了”和句末语气词，不是多字。
+- 只有删除、补入或调换某个字后，句子结构和语义能够唯一修复时才接受；润色、专名核对和引文核对不属于本类。`;
+
+async function verifyMechanicalFindings(findings, pages, signal) {
+  const candidates = findings.filter((finding) => finding.subcategory === "多字、漏字、倒字");
+  const apiKey = process.env.LLM_API_KEY || process.env.OPENAI_API_KEY;
+  if (!apiKey || !candidates.length) return findings;
+  const baseUrl = (process.env.LLM_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
+  const model = process.env.LLM_MODEL || process.env.OPENAI_MODEL || "gpt-4.1-mini";
+  const payload = candidates.map((finding, index) => ({
+    candidate_id: `M${index + 1}`,
+    page_number: finding.page_number,
+    quote: finding.quote,
+    suggestion: finding.suggestion,
+    explanation: finding.explanation,
+    context: finding.context || pages.find((page) => page.page_number === Number(finding.page_number))?.text.slice(0, 500) || ""
+  }));
+  const messages = [
+    { role: "system", content: `你是出版社“多字、漏字、倒字”复核员。逐项核对完整句法、词义、固定搭配和上下文，只接受能够唯一确认的机械性增字、缺字或字序颠倒；不能唯一确认时拒绝。不得因为PDF换行、换栏、引号跨段或专名陌生而接受候选。\n${MECHANICAL_REVIEW_EXAMPLES}\n只返回JSON对象：{"accepted_ids":["M1"]}。` },
+    { role: "user", content: JSON.stringify(payload) }
+  ];
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      signal,
+      headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ model, temperature: 0.1, response_format: { type: "json_object" }, messages })
+    });
+    if (!response.ok) {
+      if (response.status === 429 && attempt < 3) {
+        const delayMs = Number(response.headers.get("retry-after") || 0) * 1000 || attempt * 30000;
+        await waitForRetry(delayMs, signal);
+        continue;
+      }
+      throw new Error(`模型复核失败：HTTP ${response.status}`);
+    }
+    const content = (await response.json()).choices?.[0]?.message?.content || "";
+    try {
+      const parsed = JSON.parse(content);
+      if (!parsed || !Array.isArray(parsed.accepted_ids)) throw new Error();
+      const accepted = new Set(parsed.accepted_ids);
+      let index = 0;
+      return findings.filter((finding) => {
+        if (finding.subcategory !== "多字、漏字、倒字") return true;
+        index += 1;
+        return accepted.has(`M${index}`);
+      });
+    } catch {
+      if (attempt === 3) return findings;
+      messages.push({ role: "assistant", content }, { role: "user", content: "只返回合法JSON对象，格式为{\"accepted_ids\":[]}，不要输出其他文字。" });
+    }
+  }
+  return findings;
+}
+
+export async function recheckExistingMechanicalFindings() {
+  const candidates = all(`SELECT f.*, b.start_page, b.end_page
+    FROM findings f JOIN books b ON b.id = f.book_id
+    WHERE f.subcategory = '多字、漏字、倒字' AND f.review_status = '待判断'
+    ORDER BY f.book_id, f.task_id, f.page_number`);
+  if (!candidates.length || !(process.env.LLM_API_KEY || process.env.OPENAI_API_KEY)) return false;
+  const groups = new Map();
+  for (const finding of candidates) {
+    const key = `${finding.book_id}|${finding.task_id}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(finding);
+  }
+  for (const findings of groups.values()) {
+    const first = findings[0];
+    const pages = all("SELECT * FROM pages WHERE book_id = ? AND page_number BETWEEN ? AND ? ORDER BY page_number", [first.book_id, first.start_page, first.end_page]);
+    const reviewed = await verifyMechanicalFindings(findings, pages, new AbortController().signal);
+    const acceptedIds = new Set(reviewed.map((finding) => finding.id));
+    for (const finding of findings) {
+      if (!acceptedIds.has(finding.id)) run("DELETE FROM findings WHERE id = ? AND review_status = '待判断'", [finding.id]);
+    }
+  }
+  return true;
+}
+
 async function modelFindings(pages, sources, signal) {
   const deterministicFindings = localFindings(pages);
   const apiKey = process.env.LLM_API_KEY || process.env.OPENAI_API_KEY;
@@ -185,7 +273,7 @@ async function modelFindings(pages, sources, signal) {
   const baseUrl = (process.env.LLM_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
   const model = process.env.LLM_MODEL || process.env.OPENAI_MODEL || "gpt-4.1-mini";
   const subcategories = TAXONOMY.flatMap((group) => group.children);
-  const manuscript = pages.map((page) => `[第${page.page_number}页${page.is_table_of_contents ? "｜页面类型：目录" : ""}]\n${page.text}`).join("\n\n");
+  const manuscript = manuscriptTextForModel(pages);
   const references = sourceExcerpts(sources, manuscript);
   const messages = [
     {
@@ -402,11 +490,13 @@ export async function runReview(taskId) {
       }
       const progress = Math.round(5 + (completed / chunks.length) * 85);
       run("UPDATE review_tasks SET progress = ? WHERE id = ?", [progress, taskId]);
-      return findings.map((finding) => normalizeFinding(finding, chunk, sources)).filter(Boolean);
+      return findings;
     });
     run("UPDATE review_tasks SET stage = '合并与定位', progress = 94 WHERE id = ?", [taskId]);
+    const reviewedRawFindings = await verifyMechanicalFindings(grouped.flat(), pages, controller.signal);
+    const normalizedFindings = reviewedRawFindings.map((finding) => normalizeFinding(finding, pages, sources)).filter(Boolean);
     const unique = new Map();
-    for (const finding of grouped.flat()) {
+    for (const finding of normalizedFindings) {
       const key = `${finding.page_number}|${finding.subcategory}|${finding.quote}`;
       if (!unique.has(key)) unique.set(key, finding);
     }
